@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument('--input-dir', required=True, help='Directory containing basic extracted docs')
     parser.add_argument('--code-dir', required=True, help='Root directory of the codebase')
     parser.add_argument('--output-dir', required=True, help='Directory to write enhanced docs')
-    parser.add_argument('--model', default='anthropic.claude-3-sonnet-20240229-v1:0', help='Bedrock model to use')
+    parser.add_argument('--model', default='anthropic.claude-3-5-sonnet-20240620-v1:0', help='Bedrock model to use')
     parser.add_argument('--max-tokens', type=int, default=4000, help='Maximum tokens for model response')
     parser.add_argument('--temperature', type=float, default=0.5, help='Model temperature (0.0-1.0)')
     parser.add_argument('--force', action='store_true', help='Force regeneration of all docs')
@@ -169,10 +169,10 @@ def extract_code_snippets(command_files, command_name, max_snippets=3, max_lines
     
     return "\n\n".join(snippets)
 
-def generate_enhanced_docs(basic_content, command_name, command_details, code_snippets, model="anthropic.claude-v2", max_tokens=4000, temperature=0.5, region="us-west-2"):
+def generate_enhanced_docs(basic_content, command_name, command_details, code_snippets, model="anthropic.claude-3-sonnet-20240229-v1:0", max_tokens=4000, temperature=0.5, region="us-west-2"):
     """Generate enhanced documentation using Amazon Bedrock."""
-    # Prepare a detailed prompt
-    prompt = f"""
+    # Prepare the content for the prompt
+    prompt_content = f"""
     You are an expert technical writer creating documentation for the Amazon Q Developer CLI.
     
     # TASK
@@ -229,26 +229,48 @@ def generate_enhanced_docs(basic_content, command_name, command_details, code_sn
     # Call the Bedrock API
     bedrock_runtime = boto3.client('bedrock-runtime', region_name=region)
     
-    # Format the request for Claude
+    # Format the request using the messages format for Claude 3 models
     request_body = {
-        "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
-        "max_tokens_to_sample": max_tokens,
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
         "temperature": temperature,
-        "anthropic_version": "bedrock-2023-05-31"
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt_content
+                    }
+                ]
+            }
+        ]
     }
     
     try:
         response = bedrock_runtime.invoke_model(
             modelId=model,
-            body=json.dumps(request_body)
+            body=json.dumps(request_body),
+            contentType="application/json",
+            accept="application/json"
         )
         
         response_body = json.loads(response['body'].read().decode('utf-8'))
         
-        # Extract the generated text
-        return response_body.get('completion', '')
+        # Extract the generated text from the messages format response
+        if "content" in response_body and len(response_body["content"]) > 0:
+            for content_item in response_body["content"]:
+                if content_item.get("type") == "text":
+                    return content_item.get("text", "")
+        
+        print(f"Unexpected response format: {response_body}")
+        return None
     except Exception as e:
         print(f"Error calling Bedrock: {e}")
+        print(f"Model ID: {model}")
+        print(f"Region: {region}")
+        if hasattr(e, 'response') and 'Error' in e.response:
+            print(f"Error details: {e.response['Error']}")
         return None
 
 def should_regenerate(input_path, output_path, force=False):
