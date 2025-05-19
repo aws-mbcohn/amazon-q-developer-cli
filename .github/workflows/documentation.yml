@@ -1,5 +1,6 @@
 name: Documentation
-true:
+
+on:
   pull_request:
     branches:
     - main
@@ -14,6 +15,7 @@ true:
     - crates/q_cli/**
     - docs/**
     - .github/workflows/documentation.yml
+
 jobs:
   build-docs:
     runs-on: ubuntu-latest
@@ -102,5 +104,15 @@ jobs:
       run: 'cd infrastructure
 
         npm install
+
+        '
+    - name: Deploy documentation
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: us-west-2
+      run: 'cd infrastructure
+
+        npm run cdk deploy -- --require-approval never
 
         '
