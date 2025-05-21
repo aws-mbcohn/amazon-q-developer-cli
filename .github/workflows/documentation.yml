@@ -12,6 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
+      - name: Debug Environment
+        run: |
+          echo "Running documentation workflow"
+          echo "Python version:"
+          python --version
+          echo "AWS CLI version:"
+          aws --version
+          echo "Current directory structure:"
+          find . -type d -maxdepth 2
+          find docs -type f | sort
+          echo "GitHub context:"
+          echo "Actor: ${{ github.actor }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -25,11 +40,15 @@ jobs:
       - name: Generate documentation
         run: |
           mkdir -p docs/generated
-          python scripts/extract_docs.py
+          python scripts/extract_docs.py --source . --output docs/generated
+          echo "Generated documentation files:"
+          find docs/generated -type f | sort
           
       # Add the documentation enhancement steps
       - name: Install documentation enhancement dependencies
-        run: python -m pip install boto3
+        run: |
+          python -m pip install boto3
+          pip freeze | grep boto3
         
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
@@ -38,10 +57,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
           
+      - name: Test AWS credentials
+        run: |
+          aws sts get-caller-identity
+          aws bedrock list-foundation-models --region us-west-2 | grep anthropic
+          
       - name: Enhance documentation with Bedrock
         run: |
           mkdir -p docs/enhanced
-          python scripts/enhance_docs_bedrock.py --input-dir docs/generated --code-dir . --output-dir docs/enhanced --model anthropic.claude-3-5-sonnet-20240620-v1:0
+          python scripts/enhance_docs_bedrock.py --input-dir docs/generated --code-dir . --output-dir docs/enhanced --model anthropic.claude-3-5-sonnet-20240620-v1:0 --verbose
+          echo "Enhanced documentation files:"
+          find docs/enhanced -type f | sort
           
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -52,12 +78,15 @@ jobs:
       - name: Install mdBook
         run: |
           cargo install mdbook
+          mdbook --version
           
       - name: Setup mdBook structure
         run: |
           mkdir -p docs/src
           # Use enhanced docs instead of generated docs
           cp -r docs/enhanced/* docs/src/
+          echo "Source directory files:"
+          find docs/src -type f | sort
           
           # Create book.toml
           cat > docs/book.toml << EOF
@@ -109,6 +138,15 @@ jobs:
       - name: Build mdBook
         run: |
           cd docs && mdbook build
+          echo "Book directory files:"
+          find book -type f | head -n 10
+          
+      - name: Create verification file
+        run: |
+          echo "Documentation build completed at $(date)" > docs/book/verification.txt
+          echo "Build triggered by: ${{ github.actor }}" >> docs/book/verification.txt
+          echo "Commit: ${{ github.sha }}" >> docs/book/verification.txt
+          cat docs/book/verification.txt
           
       - name: Upload documentation artifact
         uses: actions/upload-artifact@v3
@@ -147,3 +185,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-west-2
+          
+      - name: Verify deployment
+        run: |
+          echo "Deployment completed at $(date)"
+          echo "CloudFront distribution: https://d357fmi68hmyux.cloudfront.net/"
+          aws cloudfront create-invalidation --distribution-id E1YZDOKXJL6AJD --paths "/*"
