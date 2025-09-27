@@ -324,19 +324,16 @@ fn main() {
     let file: syn::File = syn::parse_str(&out).unwrap();
     let pp = prettyplease::unparse(&file);
 
-    // write an empty file to the output directory
-    std::fs::write(format!("{}/mod.rs", outdir), pp).unwrap();
-}
-
 /// Downloads the latest feed.json from the autocomplete repository.
 /// This ensures official builds have the most up-to-date changelog information.
 ///
 /// # Errors
 ///
-/// Prints cargo warnings if:
+/// Returns errors if:
 /// - `curl` command is not available
 /// - Network request fails
 /// - File write operation fails
+/// - Downloaded content fails validation
 fn download_feed_json() {
     use std::process::Command;
 
@@ -346,9 +343,8 @@ fn download_feed_json() {
     let curl_check = Command::new("curl").arg("--version").output();
 
     if curl_check.is_err() {
-        panic!(
-            "curl command not found. Cannot download latest feed.json. Please install curl or build without FETCH_FEED=1 to use existing feed.json."
-        );
+        eprintln!("curl command not found. Cannot download latest feed.json. Please install curl or build without FETCH_FEED=1 to use existing feed.json.");
+        std::process::exit(1);
     }
 
     let output = Command::new("curl")
@@ -359,14 +355,22 @@ fn download_feed_json() {
             "-s",           // silent
             "-v",           // verbose output printed to stderr
             "--show-error", // print error message to stderr (since -s is used)
-            "https://api.github.com/repos/aws/amazon-q-developer-cli-autocomplete/contents/feed.json",
+            "--max-filesize", "1048576", // 1MB limit
+            "",
         ])
         .output();
 
     match output {
         Ok(result) if result.status.success() => {
+            // Basic validation - ensure it's valid JSON
+            if let Err(e) = serde_json::from_slice::<serde_json::Value>(&result.stdout) {
+                eprintln!("Downloaded content is not valid JSON: {}", e);
+                std::process::exit(1);
+            }
+            
             if let Err(e) = std::fs::write("src/cli/feed.json", result.stdout) {
-                panic!("Failed to write feed.json: {}", e);
+                eprintln!("Failed to write feed.json: {}", e);
+                std::process::exit(1);
             } else {
                 println!("cargo:warning=Successfully downloaded latest feed.json");
             }
@@ -377,10 +381,13 @@ fn download_feed_json() {
             } else {
                 "An unknown error occurred".to_string()
             };
-            panic!("Failed to download feed.json: {}", error_msg);
+            eprintln!("Failed to download feed.json: {}", error_msg);
+            std::process::exit(1);
         },
         Err(e) => {
-            panic!("Failed to execute curl: {}", e);
+            eprintln!("Failed to execute curl: {}", e);
+            std::process::exit(1);
         },
     }
+}
 }
