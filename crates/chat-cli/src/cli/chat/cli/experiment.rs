@@ -12,7 +12,6 @@ use crossterm::{
 };
 use dialoguer::Select;
 
-use crate::cli::chat::conversation::format_tool_spec;
 use crate::cli::chat::{
     ChatError,
     ChatSession,
@@ -49,6 +48,20 @@ static AVAILABLE_EXPERIMENTS: &[Experiment] = &[
         name: "Todo Lists",
         description: "Enables Q to create todo lists that can be viewed and managed using /todos",
         setting_key: Setting::EnabledTodoList,
+    },
+    Experiment {
+        name: "Checkpoint",
+        description: concat!(
+            "Enables workspace checkpoints to snapshot, list, expand, diff, and restore files (/checkpoint)\n",
+            "                             ",
+            "Cannot be used in tangent mode (to avoid mixing up conversation history)"
+        ),
+        setting_key: Setting::EnabledCheckpoint,
+    },
+    Experiment {
+        name: "Context Usage Indicator",
+        description: "Shows context usage percentage in the prompt (e.g., [rust-agent] 6% >)",
+        setting_key: Setting::EnabledContextUsageIndicator,
     },
 ];
 
@@ -108,7 +121,16 @@ async fn select_experiment(os: &mut Os, session: &mut ChatSession) -> Result<Opt
             sel
         },
         // Ctrl‑C -> Err(Interrupted)
-        Err(dialoguer::Error::IO(ref e)) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
+        Err(dialoguer::Error::IO(ref e)) if e.kind() == std::io::ErrorKind::Interrupted => {
+            // Move to beginning of line and clear everything from warning message down
+            queue!(
+                session.stderr,
+                crossterm::cursor::MoveToColumn(0),
+                crossterm::cursor::MoveUp(experiment_labels.len() as u16 + 3),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+            )?;
+            return Ok(None);
+        },
         Err(e) => return Err(ChatError::Custom(format!("Failed to choose experiment: {e}").into())),
     };
 
@@ -140,15 +162,12 @@ async fn select_experiment(os: &mut Os, session: &mut ChatSession) -> Result<Opt
             .await
             .map_err(|e| ChatError::Custom(format!("Failed to update experiment setting: {e}").into()))?;
 
-        // Reload tools to reflect the experiment change
-        let tools = session
+        // Reload built-in tools to reflect the experiment change while preserving MCP tools
+        session
             .conversation
-            .tool_manager
-            .load_tools(os, &mut session.stderr)
+            .reload_builtin_tools(os, &mut session.stderr)
             .await
             .map_err(|e| ChatError::Custom(format!("Failed to update tool spec: {e}").into()))?;
-
-        session.conversation.tools = format_tool_spec(tools);
 
         let status_text = if new_state { "enabled" } else { "disabled" };
 
@@ -160,6 +179,13 @@ async fn select_experiment(os: &mut Os, session: &mut ChatSession) -> Result<Opt
             style::ResetColor,
             style::SetForegroundColor(Color::Reset),
             style::SetBackgroundColor(Color::Reset),
+        )?;
+    } else {
+        // ESC was pressed - clear the warning message
+        queue!(
+            session.stderr,
+            crossterm::cursor::MoveUp(3), // Move up past selection + 2 disclaimer lines
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
         )?;
     }
 

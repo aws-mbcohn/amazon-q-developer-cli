@@ -4,6 +4,56 @@ Amazon Q CLI includes experimental features that can be toggled on/off using the
 
 ## Available Experiments
 
+### Checkpointing
+**Description:** Enables session-scoped checkpoints for tracking file changes using Git CLI commands
+
+**Features:**
+- Snapshots file changes into a shadow bare git repo
+- List, expand, diff, and restore to any checkpoint
+- Conversation history unwinds when restoring checkpoints
+- Auto-enables in git repositories (ephemeral, cleaned on session end)
+- Manual initialization available for non-git directories
+
+**Usage:**
+```
+/checkpoint init                    # Manually enable checkpoints (if not in git repo)
+/checkpoint list [--limit N]       # Show turn-level checkpoints with file stats
+/checkpoint expand <tag>            # Show tool-level checkpoints under a turn
+/checkpoint diff <tag1> [tag2|HEAD] # Compare checkpoints or with current state
+/checkpoint restore [<tag>] [--hard] # Restore to checkpoint (interactive picker if no tag)
+/checkpoint clean                   # Delete session shadow repo
+```
+
+**Restore Options:**
+- Default: Revert tracked changes & deletions; keep files created after checkpoint
+- `--hard`: Make workspace exactly match checkpoint; deletes tracked files created after it
+
+**Example:**
+```
+/checkpoint list
+[0] 2025-09-18 14:00:00 - Initial checkpoint
+[1] 2025-09-18 14:05:31 - add two_sum.py (+1 file)
+[2] 2025-09-18 14:07:10 - add tests (modified 1)
+
+/checkpoint expand 2
+[2] 2025-09-18 14:07:10 - add tests
+ └─ [2.1] fs_write: Add minimal test cases to two_sum.py (modified 1)
+```
+
+### Context Usage Percentage
+**Description:** Shows context window usage as a percentage in the chat prompt
+
+**Features:**
+- Displays percentage of context window used in prompt (e.g., "[rust-agent] 6% >")
+- Color-coded indicators:
+  - Green: <50% usage
+  - Yellow: 50-89% usage  
+  - Red: 90-100% usage
+- Helps monitor context window consumption
+- Disabled by default
+
+**When enabled:** The chat prompt will show your current context usage percentage with color coding to help you understand how much of the available context window is being used.
+
 ### Knowledge
 **Command:** `/knowledge`  
 **Description:** Enables persistent context storage and retrieval across chat sessions
@@ -58,6 +108,28 @@ Amazon Q CLI includes experimental features that can be toggled on/off using the
 
 **When enabled:** Use `/tangent` or the keyboard shortcut to create a checkpoint and explore tangential topics. Use the same command to return to your main conversation.
 
+### TODO Lists
+**Tool name**: `todo_list`
+**Command:** `/todos`  
+**Description:** Enables Q to create and modify TODO lists using the `todo_list` tool and the user to view and manage existing TODO lists using `/todos`.
+
+**Features:**
+- Q will automatically make TODO lists when appropriate or when asked
+- View, manage, and delete TODOs using `/todos`
+- Resume existing TODO lists stored in `.amazonq/cli-todo-lists`
+
+**Usage:**
+```
+/todos clear-finished       # Delete completed TODOs in your working directory
+/todos resume               # Select and resume an existing TODO list
+/todos view                 # Select and view and existing TODO list
+/todos delete               # Select and delete an existing TODO list
+```
+
+**Settings:**
+- `chat.enableTodoList` - Enable/disable TODO list functionality (boolean)
+
+
 ## Managing Experiments
 
 Use the `/experiment` command to toggle experimental features:
@@ -84,11 +156,15 @@ These features are provided to gather feedback and test new capabilities. Please
 All experimental commands are available in the fuzzy search (Ctrl+S):
 - `/experiment` - Manage experimental features
 - `/knowledge` - Knowledge base commands (when enabled)
+- `/todos` - User-controlled TODO list commands (when enabled)
 
 ## Settings Integration
 
 Experiments are stored as settings and persist across sessions:
+- `EnabledCheckpointing` - Checkpointing experiment state
+- `EnabledContextUsagePercentage` - Context usage percentage experiment state
 - `EnabledKnowledge` - Knowledge experiment state
 - `EnabledThinking` - Thinking experiment state
+- `EnabledTodoList` - TODO list experiment state
 
 You can also manage these through the settings system if needed.

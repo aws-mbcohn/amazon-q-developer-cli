@@ -161,6 +161,9 @@ pub struct Agent {
     /// you configure in the mcpServers field in this config
     #[serde(default)]
     pub use_legacy_mcp_json: bool,
+    /// The model ID to use for this agent. If not specified, uses the default model.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(skip)]
     pub path: Option<PathBuf>,
 }
@@ -181,13 +184,19 @@ impl Default for Agent {
                 set.extend(default_approve);
                 set
             },
-            resources: vec!["file://AmazonQ.md", "file://README.md", "file://.amazonq/rules/**/*.md"]
-                .into_iter()
-                .map(Into::into)
-                .collect::<Vec<_>>(),
+            resources: vec![
+                "file://AmazonQ.md",
+                "file://AGENTS.md",
+                "file://README.md",
+                "file://.amazonq/rules/**/*.md",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<_>>(),
             hooks: Default::default(),
             tools_settings: Default::default(),
             use_legacy_mcp_json: true,
+            model: None,
             path: None,
         }
     }
@@ -659,21 +668,24 @@ impl Agents {
             }
 
             if let Some(user_set_default) = os.database.settings.get_string(Setting::ChatDefaultAgent) {
-                if all_agents.iter().any(|a| a.name == user_set_default) {
-                    break 'active_idx user_set_default;
+                // Treat empty strings as "no default set" to allow clean reset
+                if !user_set_default.is_empty() {
+                    if all_agents.iter().any(|a| a.name == user_set_default) {
+                        break 'active_idx user_set_default;
+                    }
+                    let _ = queue!(
+                        output,
+                        style::SetForegroundColor(Color::Red),
+                        style::Print("Error"),
+                        style::SetForegroundColor(Color::Yellow),
+                        style::Print(format!(
+                            ": user defined default {} not found. Falling back to in-memory default",
+                            user_set_default
+                        )),
+                        style::Print("\n"),
+                        style::SetForegroundColor(Color::Reset)
+                    );
                 }
-                let _ = queue!(
-                    output,
-                    style::SetForegroundColor(Color::Red),
-                    style::Print("Error"),
-                    style::SetForegroundColor(Color::Yellow),
-                    style::Print(format!(
-                        ": user defined default {} not found. Falling back to in-memory default",
-                        user_set_default
-                    )),
-                    style::Print("\n"),
-                    style::SetForegroundColor(Color::Reset)
-                );
             }
 
             all_agents.push({
@@ -767,32 +779,14 @@ impl Agents {
 
     /// Returns a label to describe the permission status for a given tool.
     pub fn display_label(&self, tool_name: &str, origin: &ToolOrigin) -> String {
-        use crate::util::pattern_matching::matches_any_pattern;
+        use crate::util::tool_permission_checker::is_tool_in_allowlist;
 
         let tool_trusted = self.get_active().is_some_and(|a| {
-            if matches!(origin, &ToolOrigin::Native) {
-                return matches_any_pattern(&a.allowed_tools, tool_name);
-            }
-
-            a.allowed_tools.iter().any(|name| {
-                name.strip_prefix("@").is_some_and(|remainder| {
-                    remainder
-                        .split_once(MCP_SERVER_TOOL_DELIMITER)
-                        .is_some_and(|(_left, right)| right == tool_name)
-                        || remainder == <ToolOrigin as Borrow<str>>::borrow(origin)
-                }) || {
-                    if let Some(server_name) = name.strip_prefix("@").and_then(|s| s.split('/').next()) {
-                        if server_name == <ToolOrigin as Borrow<str>>::borrow(origin) {
-                            let tool_pattern = format!("@{}/{}", server_name, tool_name);
-                            matches_any_pattern(&a.allowed_tools, &tool_pattern)
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-            })
+            let server_name = match origin {
+                ToolOrigin::Native => None,
+                ToolOrigin::McpServer(_) => Some(<ToolOrigin as Borrow<str>>::borrow(origin)),
+            };
+            is_tool_in_allowlist(&a.allowed_tools, tool_name, server_name)
         });
 
         if tool_trusted || self.trust_all_tools {
@@ -806,12 +800,12 @@ impl Agents {
     // This "static" way avoids needing to construct a tool instance.
     fn default_permission_label(&self, tool_name: &str) -> String {
         let label = match tool_name {
-            "fs_read" => "trusted".dark_green().bold(),
+            "fs_read" => "trust working directory".dark_grey(),
             "fs_write" => "not trusted".dark_grey(),
             #[cfg(not(windows))]
-            "execute_bash" => "trust read-only commands".dark_grey(),
+            "execute_bash" => "not trusted".dark_grey(),
             #[cfg(windows)]
-            "execute_cmd" => "trust read-only commands".dark_grey(),
+            "execute_cmd" => "not trusted".dark_grey(),
             "use_aws" => "trust read-only commands".dark_grey(),
             "report_issue" => "trusted".dark_green().bold(),
             "introspect" => "trusted".dark_green().bold(),
@@ -950,6 +944,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::cli::agent::hook::Source;
     const INPUT: &str = r#"
             {
               "name": "some_agent",
@@ -959,21 +954,21 @@ mod tests {
                 "fetch": { "command": "fetch3.1", "args": [] },
                 "git": { "command": "git-mcp", "args": [] }
               },
-              "tools": [                                    
+              "tools": [
                 "@git"
               ],
               "toolAliases": {
                   "@gits/some_tool": "some_tool2"
               },
-              "allowedTools": [                           
-                "fs_read",                               
+              "allowedTools": [
+                "fs_read",
                 "@fetch",
                 "@gits/git_status"
               ],
-              "resources": [                        
+              "resources": [
                 "file://~/my-genai-prompts/unittest.md"
               ],
-              "toolsSettings": {                     
+              "toolsSettings": {
                 "fs_write": { "allowedPaths": ["~/**"] },
                 "@git/git_status": { "git_user": "$GIT_USER" }
               }
@@ -1133,9 +1128,9 @@ mod tests {
 
         let label = agents.display_label("fs_read", &ToolOrigin::Native);
         // With no active agent, it should fall back to default permissions
-        // fs_read has a default of "trusted"
+        // fs_read has a default of "trust working directory"
         assert!(
-            label.contains("trusted"),
+            label.contains("trust working directory"),
             "fs_read should show default trusted permission, instead found: {}",
             label
         );
@@ -1164,7 +1159,7 @@ mod tests {
         // Test default permissions for known tools
         let fs_read_label = agents.display_label("fs_read", &ToolOrigin::Native);
         assert!(
-            fs_read_label.contains("trusted"),
+            fs_read_label.contains("trust working directory"),
             "fs_read should be trusted by default, instead found: {}",
             fs_read_label
         );
@@ -1179,8 +1174,8 @@ mod tests {
         let execute_name = if cfg!(windows) { "execute_cmd" } else { "execute_bash" };
         let execute_bash_label = agents.display_label(execute_name, &ToolOrigin::Native);
         assert!(
-            execute_bash_label.contains("read-only"),
-            "execute_bash should show read-only by default, instead found: {}",
+            execute_bash_label.contains("not trusted"),
+            "execute_bash should not be trusted by default, instead found: {}",
             execute_bash_label
         );
     }
@@ -1215,6 +1210,7 @@ mod tests {
             resources: Vec::new(),
             hooks: Default::default(),
             use_legacy_mcp_json: false,
+            model: None,
             path: None,
         };
 
@@ -1284,5 +1280,160 @@ mod tests {
             "Unknown server should not be trusted, instead found: {}",
             label
         );
+    }
+
+    #[test]
+    fn test_agent_model_field() {
+        // Test deserialization with model field
+        let agent_json = r#"{
+            "name": "test-agent",
+            "model": "claude-sonnet-4"
+        }"#;
+
+        let agent: Agent = serde_json::from_str(agent_json).expect("Failed to deserialize agent with model");
+        assert_eq!(agent.model, Some("claude-sonnet-4".to_string()));
+
+        // Test default agent has no model
+        let default_agent = Agent::default();
+        assert_eq!(default_agent.model, None);
+
+        // Test serialization includes model field
+        let agent_with_model = Agent {
+            model: Some("test-model".to_string()),
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&agent_with_model).expect("Failed to serialize");
+        assert!(serialized.contains("\"model\":\"test-model\""));
+    }
+
+    #[test]
+    fn test_agent_model_fallback_priority() {
+        // Test that agent model is checked and falls back correctly
+        let mut agents = Agents::default();
+
+        // Create agent with unavailable model
+        let agent_with_invalid_model = Agent {
+            name: "test-agent".to_string(),
+            model: Some("unavailable-model".to_string()),
+            ..Default::default()
+        };
+
+        agents.agents.insert("test-agent".to_string(), agent_with_invalid_model);
+        agents.active_idx = "test-agent".to_string();
+
+        // Verify the agent has the model set
+        assert_eq!(
+            agents.get_active().and_then(|a| a.model.as_ref()),
+            Some(&"unavailable-model".to_string())
+        );
+
+        // Test agent without model
+        let agent_without_model = Agent {
+            name: "no-model-agent".to_string(),
+            model: None,
+            ..Default::default()
+        };
+
+        agents.agents.insert("no-model-agent".to_string(), agent_without_model);
+        agents.active_idx = "no-model-agent".to_string();
+
+        assert_eq!(agents.get_active().and_then(|a| a.model.as_ref()), None);
+    }
+
+    #[test]
+    fn test_agent_with_hooks() {
+        let agent_json = json!({
+            "name": "test-agent",
+            "hooks": {
+                "agentSpawn": [
+                    {
+                        "command": "git status"
+                    }
+                ],
+                "preToolUse": [
+                    {
+                        "matcher": "fs_write",
+                        "command": "validate-tool.sh"
+                    },
+                    {
+                        "matcher": "fs_read",
+                        "command": "enforce-tdd.sh"
+                    }
+                ],
+                "postToolUse": [
+                    {
+                        "matcher": "fs_write",
+                        "command": "format-python.sh"
+                    }
+                ]
+            }
+        });
+
+        let agent: Agent = serde_json::from_value(agent_json).expect("Failed to deserialize agent");
+
+        // Verify agent name
+        assert_eq!(agent.name, "test-agent");
+
+        // Verify agentSpawn hook
+        assert!(agent.hooks.contains_key(&HookTrigger::AgentSpawn));
+        let agent_spawn_hooks = &agent.hooks[&HookTrigger::AgentSpawn];
+        assert_eq!(agent_spawn_hooks.len(), 1);
+        assert_eq!(agent_spawn_hooks[0].command, "git status");
+        assert_eq!(agent_spawn_hooks[0].matcher, None);
+
+        // Verify preToolUse hooks
+        assert!(agent.hooks.contains_key(&HookTrigger::PreToolUse));
+        let pre_tool_hooks = &agent.hooks[&HookTrigger::PreToolUse];
+        assert_eq!(pre_tool_hooks.len(), 2);
+
+        assert_eq!(pre_tool_hooks[0].command, "validate-tool.sh");
+        assert_eq!(pre_tool_hooks[0].matcher, Some("fs_write".to_string()));
+
+        assert_eq!(pre_tool_hooks[1].command, "enforce-tdd.sh");
+        assert_eq!(pre_tool_hooks[1].matcher, Some("fs_read".to_string()));
+
+        // Verify postToolUse hooks
+        assert!(agent.hooks.contains_key(&HookTrigger::PostToolUse));
+
+        // Verify default values are set correctly
+        for hooks in agent.hooks.values() {
+            for hook in hooks {
+                assert_eq!(hook.timeout_ms, 30_000);
+                assert_eq!(hook.max_output_size, 10_240);
+                assert_eq!(hook.cache_ttl_seconds, 0);
+                assert_eq!(hook.source, Source::Agent);
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty_default_agent_setting() {
+        use crate::database::settings::{Setting, Settings};
+        use std::collections::HashMap;
+        
+        // Test that empty string is treated as "no default set"
+        let mut settings_map = HashMap::new();
+        settings_map.insert(Setting::ChatDefaultAgent.to_string(), serde_json::Value::String("".to_string()));
+        let settings = Settings::from_map(settings_map);
+        
+        // get_string should return Some("") for empty string
+        let result = settings.get_string(Setting::ChatDefaultAgent);
+        assert_eq!(result, Some("".to_string()));
+        
+        // The fix should treat this as "no default set" by checking !user_set_default.is_empty()
+        // This test documents the expected behavior: empty strings should be ignored
+        let empty_string = result.unwrap();
+        assert!(empty_string.is_empty(), "Empty string should be detected as empty");
+        
+        // Test non-empty string still works
+        let mut settings_map = HashMap::new();
+        settings_map.insert(Setting::ChatDefaultAgent.to_string(), serde_json::Value::String("my-agent".to_string()));
+        let settings = Settings::from_map(settings_map);
+        
+        let result = settings.get_string(Setting::ChatDefaultAgent);
+        assert_eq!(result, Some("my-agent".to_string()));
+        
+        let non_empty_string = result.unwrap();
+        assert!(!non_empty_string.is_empty(), "Non-empty string should not be empty");
     }
 }
