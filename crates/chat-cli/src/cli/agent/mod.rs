@@ -668,21 +668,24 @@ impl Agents {
             }
 
             if let Some(user_set_default) = os.database.settings.get_string(Setting::ChatDefaultAgent) {
-                if all_agents.iter().any(|a| a.name == user_set_default) {
-                    break 'active_idx user_set_default;
+                // Treat empty strings as "no default set" to allow clean reset
+                if !user_set_default.is_empty() {
+                    if all_agents.iter().any(|a| a.name == user_set_default) {
+                        break 'active_idx user_set_default;
+                    }
+                    let _ = queue!(
+                        output,
+                        style::SetForegroundColor(Color::Red),
+                        style::Print("Error"),
+                        style::SetForegroundColor(Color::Yellow),
+                        style::Print(format!(
+                            ": user defined default {} not found. Falling back to in-memory default",
+                            user_set_default
+                        )),
+                        style::Print("\n"),
+                        style::SetForegroundColor(Color::Reset)
+                    );
                 }
-                let _ = queue!(
-                    output,
-                    style::SetForegroundColor(Color::Red),
-                    style::Print("Error"),
-                    style::SetForegroundColor(Color::Yellow),
-                    style::Print(format!(
-                        ": user defined default {} not found. Falling back to in-memory default",
-                        user_set_default
-                    )),
-                    style::Print("\n"),
-                    style::SetForegroundColor(Color::Reset)
-                );
             }
 
             all_agents.push({
